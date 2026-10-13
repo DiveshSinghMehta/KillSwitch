@@ -1,0 +1,11 @@
+
+services:
+  nginx:
+    image: openresty/openresty:alpine
+    container_name: killswitch-nginx
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/nginx.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./kill_switch.flag:/usr/local/openresty/nginx/conf/kill_switch.flag:ro
+
