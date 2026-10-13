@@ -1,21 +1,25 @@
 
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 from langsmith import Client
+import redis
 
 PROJECT_NAME = "KILLSWITCH"
 POLL_INTERVAL = 10
+REDIS_CLIENT = redis.Redis.from_url(
+    os.environ.get("REDIS_URL", "redis://127.0.0.1:6379/0"),
+    decode_responses=True,
+    socket_connect_timeout=1,
+    socket_timeout=1,
+)
+KILL_STATE_KEY = "ai_service:state"
 
 SENSITIVE_VALUES = [
     "9876543210",
     "123456789",
 ]
-
-# Must match the location used by ai_app/kill_switch.py
-FLAG_FILE = Path(__file__).resolve().parent / "kill_switch.flag"
-
 
 def find_sensitive_values(output):
     text = str(output or "")
@@ -59,9 +63,6 @@ async def main():
 
                 matches = find_sensitive_values(run.outputs)
 
-                # Mark processed only after output is available.
-                seen_run_ids.add(run_id)
-
                 if matches:
                     print("\n🚨 SUSPICIOUS TRACE DETECTED")
                     print("Run ID:", run_id)
@@ -69,11 +70,16 @@ async def main():
                     print("Started:", run.start_time)
                     print("Matched test values:", len(matches))
 
-                    FLAG_FILE.write_text("DISABLED", encoding="utf-8")
-                    print("🛑 Shared kill-switch flag created.")
-                    print("Future requests should be blocked.")
+                    # Write to Redis directly. Nginx reads this state before
+                    # proxying, so detection does not depend on a Django request.
+                    REDIS_CLIENT.set(KILL_STATE_KEY, "KILLED")
+                    print("Redis state set to KILLED; Nginx will block regular requests.")
                 else:
                     print(f"[OK] New trace: {run_id}")
+
+                # If the Redis write fails, leave the run unseen so the next
+                # poll retries the kill action.
+                seen_run_ids.add(run_id)
 
                 if run.error:
                     print("Trace reported an error.")

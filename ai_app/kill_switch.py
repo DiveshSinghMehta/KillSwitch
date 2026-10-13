@@ -1,21 +1,31 @@
+"""Redis-backed global AI service state shared with Nginx."""
 
-from pathlib import Path
+from functools import lru_cache
 
-# Shared by Django and monitor_langsmith.py
-FLAG_FILE = Path(__file__).resolve().parent.parent / "kill_switch.flag"
+import redis
+from django.conf import settings
 
-
-def kill_switch():
-    FLAG_FILE.write_text("DISABLED", encoding="utf-8")
-    print("🛑 AI KILL SWITCH FLAG ACTIVATED")
-
-
-def is_ai_enabled():
-    return not FLAG_FILE.exists()
+ENABLED = "ENABLED"
+KILLED = "KILLED"
 
 
-def reset_kill_switch():
-    """Use only when you intentionally want to re-enable AI."""
-    if FLAG_FILE.exists():
-        FLAG_FILE.unlink()
-        print("✅ AI KILL SWITCH RESET")
+@lru_cache(maxsize=1)
+def get_redis_client():
+    return redis.Redis.from_url(
+        settings.REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=1,
+        socket_timeout=1,
+    )
+
+
+def get_kill_state():
+    """Return the stored state; an unset key means the service is enabled."""
+    state = get_redis_client().get(settings.KILL_SWITCH_REDIS_KEY)
+    return ENABLED if state is None else state.upper()
+
+
+def set_kill_state(state):
+    if state not in (ENABLED, KILLED):
+        raise ValueError("State must be ENABLED or KILLED")
+    get_redis_client().set(settings.KILL_SWITCH_REDIS_KEY, state)
